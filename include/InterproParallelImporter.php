@@ -26,17 +26,33 @@ class InterproParallelImporter
     protected $max_jobs;
 
     /**
+     * The regexp to match the feature name.
+     *
+     * @var string
+     */
+    protected $regexp;
+
+    /**
+     * The query type.
+     *
+     * @var string
+     */
+    protected $type;
+
+    /**
      * InterproParallelImporter constructor.
      *
      * @param int $analysis_id the analysis id to associate the annotations with.
      * @param string $path Path to IPR directory.
      * @throws \Exception
      */
-    public function __construct($analysis_id, $path, $max_jobs = 5)
+    public function __construct($analysis_id, $path, $max_jobs = 5, $regexp = '/(.*?)/', $type = 'mRNA')
     {
         $this->analysis_id = $analysis_id;
         $this->path = $path;
         $this->max_jobs = $max_jobs;
+        $this->regexp = $regexp;
+        $this->type = $type;
 
         $this->validate();
     }
@@ -153,6 +169,7 @@ class InterproParallelImporter
      */
     protected function parallelImport($directory)
     {
+        echo "Starting job $directory\n";
         $output = '';
         ob_start(function ($buffer) use (&$output) {
             $output .= $buffer;
@@ -163,14 +180,14 @@ class InterproParallelImporter
         $run_args = [
             'analysis_id' => $this->analysis_id,
             // optional
-            'query_type' => 'mRNA',
-            'query_re' => '/(.*?)/',
+            'query_type' => $this->type,
+            'query_re' => $this->regexp,
             'query_uniquename' => null,
             'parsego' => true,
         ];
 
         $importer->create($run_args, [
-            'file_path' => $directory,
+            'file_local' => $directory,
         ]);
         $importer->prepareFiles();
         $this->run($importer);
