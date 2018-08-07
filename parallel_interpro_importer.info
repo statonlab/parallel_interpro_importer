@@ -1,0 +1,3 @@
+name = Parallel Interpro Importer
+description = Loads interpro files in a parallel manner
+core = 7.x
