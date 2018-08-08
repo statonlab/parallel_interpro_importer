@@ -52,8 +52,12 @@ drush interpro --path=/var/www/html/sites/default/files/ips \
 
 ## Caveats
 
-This loader does not use database transactions. Please make sure your data works with
+1. This loader does not use database transactions. Please make sure your data works with
 this loader before running it on a production environment.
+1. Since this loader splits jobs into multiple threads/processes, you must run the job from within the module's directory
+so that it has access to Drupal. Drush's `--root` will not work. Alternatively, you can specify both the `--root` option and add 
+the environment variable `DRUPAL_ROOT=/path` to the command as such:
+  - `DRUPAL_ROOT=/path drush interpro [OPTIONS] --root=/path`
 
 ## License
 
