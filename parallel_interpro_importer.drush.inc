@@ -40,6 +40,6 @@ function drush_parallel_interpro_importer_interpro_importer()
         $importer = new \StatonLab\InterPro\InterproParallelImporter($analysis_id, $path, $max_jobs, $regexp, $type);
         $importer->import();
     } catch (Exception $e) {
-        drush_print($e->getMessage());
+        drush_log($e->getMessage(), 'error');
     }
 }

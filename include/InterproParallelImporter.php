@@ -111,22 +111,6 @@ class InterproParallelImporter
         // clear out the anslysisfeature table for this analysis before getting started
         chado_delete_record('analysisfeature', ['analysis_id' => $this->analysis_id]);
 
-        if ($count <= 10) {
-            \Amp\call(function () {
-                $this->parallelImport($this->path);
-
-                return "Single job completed. Output printed to {$this->path}.out";
-            })->onResolve(function ($error, $response) {
-                if ($error) {
-                    drush_print("Error: $error");
-
-                    return;
-                }
-
-                drush_print($response);
-            });
-        }
-
         echo "Found $count files. Attempting to group files into $this->max_jobs batches.\n";
         $directories = $this->slice($files, $count);
         echo "Launching ".count($directories)." Jobs!\n";
@@ -160,14 +144,21 @@ class InterproParallelImporter
      */
     protected function slice($files, $count)
     {
-        // per directory
+        if ($count < $this->max_jobs) {
+            throw new \Exception("There are $count files which cannot be distributed over {$this->max_jobs} jobs. Please specify --max_jobs to be less than or equal to the number of files.");
+        }
+
         $per_directory = ceil($count / $this->max_jobs);
         $chunks = array_chunk($files, $per_directory);
 
         $directories = [];
         foreach ($chunks as $key => $chunk) {
             $path = $this->path.'/ips_batch_'.$key;
-            if (! file_exists($path) && mkdir($path) === false) {
+            if (file_exists($path)) {
+                throw new \Exception('Directory at '.$path.' already exists. Please delete all ips_batch_* directories before proceeding.');
+            }
+
+            if (mkdir($path) === false) {
                 throw new \Exception('Unable to create directory at '.$path.'. Please verify that you have write permissions.');
             }
 
