@@ -2,6 +2,14 @@
 
 namespace StatonLab\InterPro;
 
+use Amp\MultiReasonException;
+use Amp\Parallel\Worker\TaskError;
+use function Amp\ParallelFunctions\parallel;
+use function Amp\ParallelFunctions\parallelMap;
+use Amp\Promise;
+use StatonLab\TripalTestSuite\Services\BootstrapDrupal;
+use StatonLab\TripalTestSuite\TripalTestBootstrap;
+
 class InterproParallelImporter
 {
     /**
@@ -46,7 +54,7 @@ class InterproParallelImporter
      * @param string $path Path to IPR directory.
      * @throws \Exception
      */
-    public function __construct($analysis_id, $path, $max_jobs = 5, $regexp = '/(.*?)/', $type = 'mRNA')
+    public function __construct($analysis_id, $path, $max_jobs = 5, $regexp = '(.*?)', $type = 'mRNA')
     {
         $this->analysis_id = $analysis_id;
         $this->path = $path;
@@ -84,7 +92,6 @@ class InterproParallelImporter
     /**
      * Start the importer.
      *
-     * @return array[\Amp\Promise]
      * @throws \Exception
      */
     public function import()
@@ -101,33 +108,48 @@ class InterproParallelImporter
             throw new \Exception('Could not find any XML files in the specified path '.$this->path);
         }
 
-        module_load_include('inc', 'tripal_analysis_interpro', 'includes/TripalImporter/InterProImporter');
-
         // clear out the anslysisfeature table for this analysis before getting started
         chado_delete_record('analysisfeature', ['analysis_id' => $this->analysis_id]);
 
-        $promises = [];
-
         if ($count <= 10) {
-            $promises[] = \Amp\call(function () {
+            \Amp\call(function () {
                 $this->parallelImport($this->path);
 
                 return "Single job completed. Output printed to {$this->path}.out";
-            });
+            })->onResolve(function ($error, $response) {
+                if ($error) {
+                    drush_print("Error: $error");
 
-            return $promises;
+                    return;
+                }
+
+                drush_print($response);
+            });
         }
 
+        echo "Found $count files. Attempting to group files into $this->max_jobs batches.\n";
         $directories = $this->slice($files, $count);
-        foreach ($directories as $directory) {
-            $promises[] = \Amp\call(function () use ($directory) {
-                $this->parallelImport($directory);
+        echo "Launching ".count($directories)." Jobs!\n";
 
-                return "{$directory} completed. Output printed to {$directory}.out";
-            });
-        }
+        $values = Promise\wait(parallelMap($directories, function ($directory) {
+            $start = time();
+            $id = explode('_', $directory);
+            $id = $id[count($id) - 1] + 1;
+            $count = count(glob($directory.'/*.xml'));
+            echo "Starting job #{$id} with $count files.\n";
 
-        return $promises;
+            $this->parallelImport($directory);
+
+            echo "Job #{$id} completed. Output printed to {$directory}.out\n";
+            $end = time();
+
+            return $end - $start;
+        }));
+
+        $total = array_reduce($values, function ($a, $carry) {
+            return $a + $carry;
+        });
+        echo "Average time per job: ".($total / count($values))." seconds.";
     }
 
     /**
@@ -144,15 +166,16 @@ class InterproParallelImporter
 
         $directories = [];
         foreach ($chunks as $key => $chunk) {
-            $path = $this->path.'/ipr_batch_'.$key;
-            if (mkdir($path) === false) {
+            $path = $this->path.'/ips_batch_'.$key;
+            if (! file_exists($path) && mkdir($path) === false) {
                 throw new \Exception('Unable to create directory at '.$path.'. Please verify that you have write permissions.');
             }
 
             foreach ($chunk as $file) {
-                $from = $this->path.'/'.$file;
-                $to = $path.'/'.$file;
-                if (rename($from, $to) === false) {
+                $from = $file;
+                $name = explode('/', $file);
+                $to = $path.'/'.$name[count($name) - 1];
+                if (copy($from, $to) === false) {
                     throw new \Exception('Unable to move file to new directory. From: '.$from.'. To: '.$to);
                 }
             }
@@ -169,11 +192,13 @@ class InterproParallelImporter
      */
     protected function parallelImport($directory)
     {
-        echo "Starting job $directory\n";
         $output = '';
         ob_start(function ($buffer) use (&$output) {
             $output .= $buffer;
         });
+        $bootstrap = new BootstrapDrupal();
+        $bootstrap->run();
+        module_load_include('inc', 'tripal_analysis_interpro', 'includes/TripalImporter/InterProImporter');
 
         $importer = new \InterProImporter();
 
@@ -192,6 +217,7 @@ class InterproParallelImporter
         $importer->prepareFiles();
         $this->run($importer);
 
+        $output .= ob_get_contents();
         file_put_contents($directory.'.out', $output);
 
         ob_end_clean();
@@ -207,8 +233,10 @@ class InterproParallelImporter
         $property = $class->getProperty('arguments');
         $property->setAccessible(true);
         $arguments = $property->getValue($importer);
+        $files = $arguments['files'];
+        $arguments = $arguments['run_args'];
         $analysis_id = $arguments['analysis_id'];
-        $interproxmlfile = trim($arguments['files'][0]['file_path']);
+        $interproxmlfile = trim($files[0]['file_path']);
         $parsego = $arguments['parsego'];
         $query_re = $arguments['query_re'];
         $query_type = $arguments['query_type'];
@@ -226,6 +254,7 @@ class InterproParallelImporter
      * @param $query_re
      * @param $query_type
      * @param $query_uniquename
+     * @throws \Exception
      * @see \InterProImporter::parseXMLFile()
      */
     protected function parseXMLFile(
@@ -237,7 +266,7 @@ class InterproParallelImporter
         $query_type,
         $query_uniquename
     ) {
-        $transaction = db_transaction();
+        //$transaction = db_transaction();
         try {
             // If user input a file(e.g. interpro.xml)
             if (is_file($interproxmlfile)) {
@@ -247,7 +276,7 @@ class InterproParallelImporter
                 // Parsing all files in the directory
                 $dir_handle = @opendir($interproxmlfile);
                 if (! $dir_handle) {
-                    throw new \Exception('Unable to open dir');
+                    throw new \Exception('Unable to open dir '.$interproxmlfile);
                 }
                 $files_to_parse = [];
                 while ($file = readdir($dir_handle)) {
@@ -265,10 +294,9 @@ class InterproParallelImporter
                 }
             }
         } catch (\Exception $e) {
-            $transaction->rollback();
-            $importer->logMessage(t("\nFAILED: Rolling back database changes...\n"));
+            //$transaction->rollback();
+            echo $e->getMessage()."\n";
         }
-        $importer->logMessage(t("\nDone\n"));
     }
 
     /**
