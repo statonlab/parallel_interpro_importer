@@ -2,6 +2,14 @@
 
 This module provides a `drush` command to load IPS files into CHADO using parallel programming.
 
+## Prerequisites
+
+Please ensure the availability of the following software 
+- Tripal 3
+- Tripal Analysis InterPro module
+- Drush
+- Composer
+
 ## Installation
 
 - Clone this repo into your drupal modules directory:
